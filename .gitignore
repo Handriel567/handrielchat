@@ -1,0 +1,27 @@
+# Archivos y carpetas de Visual Studio
+.vs/
+.vscode/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+
+# Carpetas de compilación
+bin/
+obj/
+
+# Archivos de configuración
+*.config
+*.dll
+*.exe
+*.pdb
+
+# Archivos de dependencias (si usas paquetes NuGet)
+packages/
+
+# Archivos de logs
+*.log
+
+# Archivos temporales de sistema operativo
+Thumbs.db
+ehthumbs.db
