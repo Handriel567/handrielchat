@@ -1,41 +1,106 @@
 ﻿using System;
-using System.Net.Http;
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.WebSockets;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
 
-
-class Program
+namespace WebSocketBroadcast
 {
-    static async Task Main()
+    class Program
     {
-        string accessToken = "pk.eyJ1IjoiaGFuZHJpZWxtYXJ0aW5leiIsImEiOiJjbTY2bHd2b2QwMWwzMm9va3IwanhwZDFyIn0.2xdC-rwxL3Guor3N8K5DOQ";
-        string origin = "-73.985428,40.748817";
-        string destination = "-73.935242,40.730610";
-        string url = $"https://api.mapbox.com/directions/v5/mapbox/driving/{origin};{destination}?access_token={accessToken}";
+        private static readonly ConcurrentDictionary<string, WebSocket> ConnectedClients = new ConcurrentDictionary<string, WebSocket>();
 
-         HttpClient client = new HttpClient();
-        var response = await client.GetStringAsync(url);
+        static async Task Main(string[] args)
+        {
+            Console.WriteLine("Starting WebSocket server...");
 
-        // Deserializar el JSON
-        var routeData = JsonConvert.DeserializeObject<RouteResponse>(response);
+            string port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 
-        // Extraer información
-        Console.WriteLine("Duración: " + routeData.routes[0].duration / 60 + " minutos");
-        Console.WriteLine("Distancia: " + routeData.routes[0].distance / 1000 + " km");
-        Console.WriteLine("Ruta: " + routeData.routes[0].geometry);
-        Console.ReadKey();// Incluye coordenadas y detalles de la ruta
+            HttpListener httpListener = new HttpListener();
+            httpListener.Prefixes.Add($"http://*:{port}/");
+            httpListener.Start();
+            Console.WriteLine($"Server started on ws://localhost:{port}/");
+
+            while (true)
+            {
+                // Aceptar nuevas conexiones
+                HttpListenerContext context = await httpListener.GetContextAsync();
+                if (context.Request.IsWebSocketRequest)
+                {
+                    ProcessClient(context);
+                }
+                else
+                {
+                    context.Response.StatusCode = 400;
+                    context.Response.Close();
+                }
+            }
+        }
+
+        private static async void ProcessClient(HttpListenerContext context)
+        {
+            string clientId = Guid.NewGuid().ToString();
+            Console.WriteLine($"Client {clientId} connected.");
+
+            WebSocket webSocket = (await context.AcceptWebSocketAsync(null)).WebSocket;
+            ConnectedClients.TryAdd(clientId, webSocket);
+
+            try
+            {
+                // Leer mensajes enviados por el cliente
+                await HandleClientMessages(clientId, webSocket);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error with client {clientId}: {ex.Message}");
+            }
+            finally
+            {
+                ConnectedClients.TryRemove(clientId, out _);
+                Console.WriteLine($"Client {clientId} disconnected.");
+                if (webSocket.State != WebSocketState.Closed)
+                {
+                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by server", CancellationToken.None);
+                }
+                webSocket.Dispose();
+            }
+        }
+
+        private static async Task HandleClientMessages(string clientId, WebSocket webSocket)
+        {
+            byte[] buffer = new byte[1024 * 4];
+
+            while (webSocket.State == WebSocketState.Open)
+            {
+                WebSocketReceiveResult result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    break;
+                }
+
+                string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                Console.WriteLine($"Received from {clientId}: {message}");
+
+                // Broadcast del mensaje a todos los clientes conectados
+                await BroadcastMessageAsync(clientId, message);
+            }
+        }
+
+        private static async Task BroadcastMessageAsync(string senderId, string message)
+        {
+            string broadcastMessage = $"Client {senderId}: {message}";
+            byte[] messageBytes = Encoding.UTF8.GetBytes(broadcastMessage);
+
+            foreach (var client in ConnectedClients)
+            {
+                if (client.Value.State == WebSocketState.Open)
+                {
+                    await client.Value.SendAsync(new ArraySegment<byte>(messageBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                }
+            }
+        }
     }
-}
-
-// Clases para deserializar
-public class RouteResponse
-{
-    public Route[] routes { get; set; }
-}
-
-public class Route
-{
-    public double duration { get; set; }
-    public double distance { get; set; }
-    public string geometry { get; set; }
 }
